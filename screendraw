@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Transparent screen overlay you can draw on with the mouse.
+
+LMB - draw, RMB - eraser (removes the stroke under the cursor)
+1-7 - color, wheel / + / - - width
+Ctrl+Z / U - undo, C - clear all
+Esc / Q - quit
+"""
+import os
+import sys
+
+# gtk4-layer-shell must be loaded before libwayland-client
+LIB = "/usr/lib/libgtk4-layer-shell.so"
+if LIB not in os.environ.get("LD_PRELOAD", ""):
+    os.environ["LD_PRELOAD"] = (LIB + " " + os.environ.get("LD_PRELOAD", "")).strip()
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Gtk4LayerShell", "1.0")
+from gi.repository import Gdk, Gtk
+from gi.repository import Gtk4LayerShell as LayerShell
+
+COLORS = [
+    (1.0, 0.2, 0.2),  # 1 red
+    (1.0, 0.85, 0.1),  # 2 yellow
+    (0.2, 0.9, 0.3),  # 3 green
+    (0.2, 0.6, 1.0),  # 4 blue
+    (1.0, 0.3, 1.0),  # 5 pink
+    (1.0, 1.0, 1.0),  # 6 white
+    (0.0, 0.0, 0.0),  # 7 black
+]
+
+
+class Overlay(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app)
+        self.strokes = []  # [(color, width, [(x, y), ...]), ...]
+        self.color = COLORS[0]
+        self.width = 4.0
+        self.cursor = None
+
+        LayerShell.init_for_window(self)
+        LayerShell.set_layer(self, LayerShell.Layer.OVERLAY)
+        LayerShell.set_keyboard_mode(self, LayerShell.KeyboardMode.EXCLUSIVE)
+        LayerShell.set_exclusive_zone(self, -1)
+        for edge in (LayerShell.Edge.TOP, LayerShell.Edge.BOTTOM,
+                     LayerShell.Edge.LEFT, LayerShell.Edge.RIGHT):
+            LayerShell.set_anchor(self, edge, True)
+
+        css = Gtk.CssProvider()
+        css.load_from_string("window { background: transparent; }")
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        self.area = Gtk.DrawingArea()
+        self.area.set_draw_func(self.on_draw)
+        self.area.set_cursor(Gdk.Cursor.new_from_name("crosshair"))
+        self.set_child(self.area)
+
+        draw = Gtk.GestureDrag(button=1)
+        draw.connect("drag-begin", self.on_begin)
+        draw.connect("drag-update", self.on_update)
+        self.area.add_controller(draw)
+
+        erase = Gtk.GestureDrag(button=3)
+        erase.connect("drag-begin", lambda g, x, y: self.erase_at(x, y))
+        erase.connect("drag-update", self.on_erase_update)
+        self.area.add_controller(erase)
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", self.on_motion)
+        self.area.add_controller(motion)
+
+        scroll = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.VERTICAL)
+        scroll.connect("scroll", self.on_scroll)
+        self.area.add_controller(scroll)
+
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.on_key)
+        self.add_controller(keys)
+
+    # --- drawing ---
+    def on_begin(self, gesture, x, y):
+        self.start = (x, y)
+        self.strokes.append((self.color, self.width, [(x, y)]))
+        self.area.queue_draw()
+
+    def on_update(self, gesture, dx, dy):
+        x, y = self.start[0] + dx, self.start[1] + dy
+        self.strokes[-1][2].append((x, y))
+        self.cursor = (x, y)
+        self.area.queue_draw()
+
+    def on_erase_update(self, gesture, dx, dy):
+        _, x, y = gesture.get_start_point()
+        self.erase_at(x + dx, y + dy)
+
+    def erase_at(self, x, y):
+        r = 12
+        before = len(self.strokes)
+        self.strokes = [
+            s for s in self.strokes
+            if not any(abs(px - x) < r + s[1] and abs(py - y) < r + s[1] for px, py in s[2])
+        ]
+        if len(self.strokes) != before:
+            self.area.queue_draw()
+
+    def on_motion(self, controller, x, y):
+        self.cursor = (x, y)
+        self.area.queue_draw()
+
+    def on_scroll(self, controller, dx, dy):
+        self.width = max(1.0, min(60.0, self.width - dy))
+        self.area.queue_draw()
+        return True
+
+    def on_draw(self, area, cr, w, h):
+        cr.set_line_cap(1)   # ROUND
+        cr.set_line_join(1)  # ROUND
+        for color, width, pts in self.strokes:
+            cr.set_source_rgb(*color)
+            cr.set_line_width(width)
+            if len(pts) == 1:
+                pts = pts * 2
+            cr.move_to(*pts[0])
+            for p in pts[1:]:
+                cr.line_to(*p)
+            cr.stroke()
+        # circle near the cursor previewing color and width
+        if self.cursor:
+            cr.set_source_rgba(*self.color, 0.8)
+            cr.set_line_width(1.5)
+            cr.arc(*self.cursor, self.width / 2 + 1, 0, 6.2832)
+            cr.stroke()
+
+    # --- keyboard ---
+    def on_key(self, controller, keyval, keycode, state):
+        name = Gdk.keyval_name(keyval) or ""
+        ctrl = state & Gdk.ModifierType.CONTROL_MASK
+        if name in ("Escape", "q"):
+            self.get_application().quit()
+        elif name in ("u",) or (ctrl and name == "z"):
+            if self.strokes:
+                self.strokes.pop()
+        elif name == "c":
+            self.strokes.clear()
+        elif name in ("plus", "equal", "KP_Add"):
+            self.width = min(60.0, self.width + 2)
+        elif name in ("minus", "KP_Subtract"):
+            self.width = max(1.0, self.width - 2)
+        elif name.isdigit() and 1 <= int(name) <= len(COLORS):
+            self.color = COLORS[int(name) - 1]
+        else:
+            return False
+        self.area.queue_draw()
+        return True
+
+
+def main():
+    app = Gtk.Application(application_id="local.screendraw")
+    # a second launch (same application_id) lands here too, so close the overlay
+    def on_activate(a):
+        if a.get_windows():
+            a.quit()
+        else:
+            Overlay(a).present()
+
+    app.connect("activate", on_activate)
+    app.run(None)
+
+
+if __name__ == "__main__":
+    main()
