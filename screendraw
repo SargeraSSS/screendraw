@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-"""Transparent screen overlay you can draw on with the mouse.
-
-LMB - draw, RMB - eraser (removes the stroke under the cursor)
-1-7 - color, wheel / + / - - width
-Ctrl+Z / U - undo, C - clear all
-Esc / Q - quit
-"""
 import os
 import sys
 
@@ -37,7 +29,7 @@ COLORS = [
 class Overlay(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app)
-        self.strokes = []  # [(color, width, [(x, y), ...]), ...]
+        self.strokes = [] 
         self.color = COLORS[0]
         self.width = 4.0
         self.cursor = None
@@ -82,7 +74,6 @@ class Overlay(Gtk.ApplicationWindow):
         keys.connect("key-pressed", self.on_key)
         self.add_controller(keys)
 
-    # --- drawing ---
     def on_begin(self, gesture, x, y):
         self.start = (x, y)
         self.strokes.append((self.color, self.width, [(x, y)]))
@@ -129,14 +120,12 @@ class Overlay(Gtk.ApplicationWindow):
             for p in pts[1:]:
                 cr.line_to(*p)
             cr.stroke()
-        # circle near the cursor previewing color and width
         if self.cursor:
             cr.set_source_rgba(*self.color, 0.8)
             cr.set_line_width(1.5)
             cr.arc(*self.cursor, self.width / 2 + 1, 0, 6.2832)
             cr.stroke()
 
-    # --- keyboard ---
     def on_key(self, controller, keyval, keycode, state):
         name = Gdk.keyval_name(keyval) or ""
         ctrl = state & Gdk.ModifierType.CONTROL_MASK
@@ -161,7 +150,6 @@ class Overlay(Gtk.ApplicationWindow):
 
 def main():
     app = Gtk.Application(application_id="local.screendraw")
-    # a second launch (same application_id) lands here too, so close the overlay
     def on_activate(a):
         if a.get_windows():
             a.quit()
